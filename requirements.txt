@@ -1,5 +1,4 @@
-streamlit>=1.40
-cloudinary>=1.41
-psycopg2-binary>=2.9
+streamlit>=1.52,<2
 sqlalchemy>=2.0
-pillow>=11.2
+psycopg2-binary
+cloudinary

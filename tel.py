@@ -1,167 +1,143 @@
 import streamlit as st
 
-# ⚠️ set_page_config DOIT être la 1ère commande Streamlit
+# DOIT être la toute première commande Streamlit
 st.set_page_config(
-    page_title="Original Laptop — Smartphones & Ordinateurs",
+    page_title="Original Laptop — Smartphones & Ordinateurs à Ouagadougou",
     page_icon="📱",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-import json
-from database import init_db, get_devices, add_contact
+import logging
+import re
+import time
+
+import config as cfg
+import ui
+from database import add_contact, get_devices, init_db
+
+log = logging.getLogger(__name__)
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+TRIS = ["Plus récents", "Prix croissant", "Prix décroissant"]
 
 init_db()
+ui.inject_css()
 
-# ================== CONFIG ==================
-WHATSAPP_NUM = "22675316729"
-EMAIL_CONTACT = "pik.joss@gmail.com"
-NOM_BOUTIQUE = "Original Laptop"
-DEVISE_1 = "FCFA"
-DEVISE_2 = "USD"
-# ============================================
+try:
+    devices = get_devices()
+except Exception:
+    log.exception("Chargement du catalogue impossible")
+    devices = []
+    st.warning("Le catalogue est momentanément indisponible. Contactez-nous sur WhatsApp en attendant.")
 
-# ---- CSS personnalisé ----
-st.markdown("""
-<style>
-.hero {
-    background: linear-gradient(135deg, #7C3AED 0%, #A78BFA 100%);
-    padding: 3rem 2rem; border-radius: 16px;
-    text-align: center; margin-bottom: 2rem;
-}
-.hero h1 { color: #FFFFFF; font-size: 2.8rem; margin: 0; }
-.hero p  { color: #F5F3FF; font-size: 1.2rem; margin-top: 0.5rem; }
-.badge {
-    display:inline-block; background:#FFFFFF; color:#7C3AED;
-    padding:4px 12px; border-radius:20px; font-size:0.85rem;
-    font-weight:bold; margin-bottom:10px;
-}
-.prix { color: #7C3AED; font-weight: bold; font-size: 1.3rem; }
-</style>
-""", unsafe_allow_html=True)
+brands_in_stock = sorted({d["marque"] for d in devices if d["marque"] and d.get("statut") != "Vendu"})
+ui.nav_and_hero(brands_in_stock)
 
-# ---- HERO ----
-st.markdown(f"""
-<div class="hero">
-    <span class="badge">📱 SMARTPHONES & 💻 ORDINATEURS</span>
-    <h1>{NOM_BOUTIQUE}</h1>
-    <p>Votre prochain appareil, neuf ou occasion, au meilleur prix</p>
-</div>
-""", unsafe_allow_html=True)
+# ------------------------------------------------------------ catalogue
+ui.section_header("catalogue", "Nos appareils",
+                  "Smartphones et ordinateurs neufs, d'occasion ou reconditionnés. Écrivez-nous sur WhatsApp pour réserver.")
 
-c1, c2 = st.columns(2)
-with c1:
-    st.link_button(
-        "📱 WhatsApp — +226 75 31 67 29",
-        f"https://wa.me/{WHATSAPP_NUM}",
-        use_container_width=True,
-    )
-with c2:
-    st.link_button(
-        "✉️ Nous écrire",
-        f"mailto:{EMAIL_CONTACT}",
-        use_container_width=True,
-    )
+if devices:
+    presentes = {d["categorie"] for d in devices if d["categorie"]}
+    cats = [c for c in cfg.CATEGORIES if c in presentes] + sorted(presentes - set(cfg.CATEGORIES))
+    labels = {"Tous": f"Tous ({len(devices)})"}
+    for c in cats:
+        labels[c] = f"{ui.pluriel(c)} ({sum(d['categorie'] == c for d in devices)})"
+    cat_f = st.pills("Catégorie", ["Tous"] + cats, default="Tous", key="cat_f",
+                     format_func=labels.get, label_visibility="collapsed") or "Tous"
 
-st.divider()
+    marques = ["Toutes"] + sorted({d["marque"] for d in devices if d["marque"]})
+    presents = {d["etat"] for d in devices if d["etat"]}
+    etats = ["Tous"] + [e for e in cfg.ETATS if e in presents] + sorted(presents - set(cfg.ETATS))
 
-# ---- CATALOGUE ----
-st.markdown("## 🛍️ Notre catalogue")
+    f1, f2, f3, f4 = st.columns([2.2, 1.2, 1.3, 1.4])
+    q = f1.text_input("Rechercher", placeholder="Ex. iPhone 13, 128 Go, HP…").strip().lower()
+    marque_f = f2.selectbox("Marque", marques)
+    etat_f = f3.selectbox("État", etats)
+    tri = f4.selectbox("Trier par", TRIS)
 
-devices = get_devices()
-if not devices:
-    st.info("Aucun appareil disponible pour le moment. Revenez bientôt !")
-    st.stop()
+    def _texte(d):
+        return " ".join(str(d.get(k) or "") for k in ("marque", "modele", "stockage", "couleur", "annee")).lower()
 
-# Filtres
-categories = ["Toutes"] + sorted({d["categorie"] for d in devices if d["categorie"]})
-marques = ["Toutes"] + sorted({d["marque"] for d in devices if d["marque"]})
-etats = ["Tous", "Neuf", "Occasion", "Reconditionné"]
+    filtered = [
+        d for d in devices
+        if (cat_f == "Tous" or d["categorie"] == cat_f)
+        and (marque_f == "Toutes" or d["marque"] == marque_f)
+        and (etat_f == "Tous" or d["etat"] == etat_f)
+        and (not q or q in _texte(d))
+    ]
+    prix = lambda d: float(d.get("prix_fcfa") or 0)
+    if tri == "Prix croissant":
+        filtered.sort(key=prix)
+    elif tri == "Prix décroissant":
+        filtered.sort(key=prix, reverse=True)
+    filtered.sort(key=lambda d: d.get("statut") == "Vendu")  # vendus en dernier (tri stable)
 
-f1, f2, f3 = st.columns(3)
-with f1:
-    cat_f = st.selectbox("Catégorie", categories)
-with f2:
-    marque_f = st.selectbox("Marque", marques)
-with f3:
-    etat_f = st.selectbox("État", etats)
+    # pagination : on repart de zéro dès que les filtres changent
+    signature = (cat_f, q, marque_f, etat_f, tri)
+    if st.session_state.get("sig") != signature:
+        st.session_state.sig = signature
+        st.session_state.shown = cfg.PAGE_SIZE
+    shown = st.session_state.get("shown", cfg.PAGE_SIZE)
 
-filtered = [
-    d for d in devices
-    if (cat_f == "Toutes" or d["categorie"] == cat_f)
-    and (marque_f == "Toutes" or d["marque"] == marque_f)
-    and (etat_f == "Tous" or d["etat"] == etat_f)
-]
+    if filtered:
+        n = len(filtered)
+        st.markdown(f'<div class="vt"><p class="count">{n} appareil{"s" if n > 1 else ""}</p></div>',
+                    unsafe_allow_html=True)
+        ui.render_grid(filtered[:shown])
+        if n > shown:
+            _, mid, _ = st.columns([1, 1, 1])
+            if mid.button("Afficher plus d'appareils", width="stretch"):
+                st.session_state.shown = shown + cfg.PAGE_SIZE
+                st.rerun()
+    else:
+        ui.md('<div class="empty"><strong>Aucun appareil ne correspond.</strong>'
+              'Modifiez les filtres ou écrivez-nous : nous cherchons le modèle que vous voulez.</div>')
+else:
+    ui.md('<div class="empty"><strong>Le catalogue se remplit.</strong>'
+          'Écrivez-nous sur WhatsApp pour connaître les arrivages.</div>')
 
-# Grille
-cols = st.columns(3)
-for i, dev in enumerate(filtered):
-    with cols[i % 3]:
-        with st.container(border=True):
-            img = dev["photo_principale"] or "https://via.placeholder.com/400x250?text=Original+Laptop"
-            st.image(img, use_container_width=True)
+# ------------------------------------------------------------ échange / confiance / étapes
+ui.band()
+ui.why_and_steps()
 
-            st.markdown(f"### {dev['marque']} {dev['modele']}")
+# ------------------------------------------------------------ contact
+left, right = st.columns([5, 6], gap="large")
+with left:
+    ui.contact_side()
+with right:
+    st.markdown('<div style="height:4.2rem"></div>', unsafe_allow_html=True)
+    options = {"Autre / pas encore choisi": None}
+    for d in devices:
+        if d.get("statut") != "Vendu":
+            label = f"{d['marque']} {d['modele']} {d.get('stockage') or ''} (#{d['id']})"
+            options[" ".join(label.split())] = d["id"]
+    with st.form("contact_form", clear_on_submit=True):
+        nom = st.text_input("Votre nom *")
+        c1, c2 = st.columns(2)
+        email = c1.text_input("E-mail")
+        wa = c2.text_input("WhatsApp", placeholder="+226 …")
+        appareil = st.selectbox("Appareil concerné", list(options))
+        message = st.text_area("Votre message *", height=110)
+        envoyer = st.form_submit_button("Envoyer ma demande", type="primary", width="stretch")
 
-            infos = []
-            if dev.get("stockage"):
-                infos.append(f"💾 {dev['stockage']}")
-            if dev.get("couleur"):
-                infos.append(f"🎨 {dev['couleur']}")
-            if dev.get("annee"):
-                infos.append(f"📅 {dev['annee']}")
-            infos.append(dev["etat"])
-            st.caption(" • ".join(infos))
+    if envoyer:
+        if not nom.strip() or not message.strip():
+            st.error("Indiquez votre nom et votre message.")
+        elif not email.strip() and not wa.strip():
+            st.error("Laissez un e-mail ou un numéro WhatsApp pour que nous puissions vous répondre.")
+        elif email.strip() and not EMAIL_RE.match(email.strip()):
+            st.error("Cette adresse e-mail ne semble pas valide.")
+        elif time.time() - st.session_state.get("last_contact", 0) < 20:
+            st.warning("Votre demande vient d'être envoyée. Patientez quelques secondes avant d'en envoyer une autre.")
+        else:
+            try:
+                add_contact({"nom": nom, "email": email, "whatsapp": wa,
+                             "message": message, "device_id": options[appareil]})
+                st.session_state.last_contact = time.time()
+                st.success("Demande envoyée. Nous vous recontactons très vite.")
+            except Exception:
+                log.exception("Enregistrement du contact impossible")
+                st.error("L'envoi a échoué. Écrivez-nous directement sur WhatsApp.")
 
-            st.markdown(
-                f"<p class='prix'>{dev['prix_fcfa']:,.0f} {DEVISE_1} "
-                f"<small>(≈ {dev['prix_usd']:,.0f} {DEVISE_2})</small></p>",
-                unsafe_allow_html=True,
-            )
-
-            if dev["statut"] == "Vendu":
-                st.error("❌ VENDU")
-            else:
-                msg = (
-                    f"Bonjour Original Laptop, je suis intéressé par le "
-                    f"{dev['marque']} {dev['modele']} "
-                    f"({dev.get('stockage','')} - {dev['etat']}) "
-                    f"(réf. #{dev['id']})"
-                )
-                wa_url = f"https://wa.me/{WHATSAPP_NUM}?text={msg.replace(' ', '%20')}"
-                st.link_button("📱 Contacter sur WhatsApp", wa_url, use_container_width=True)
-
-            with st.expander("Voir plus / Demander info"):
-                st.write(dev["description"] or "Pas de description.")
-
-                photos = dev.get("photos")
-                if isinstance(photos, str):
-                    try:
-                        photos = json.loads(photos)
-                    except Exception:
-                        photos = []
-                if photos and len(photos) > 1:
-                    st.write("**Autres photos :**")
-                    for p in photos[1:]:
-                        st.image(p, use_container_width=True)
-
-                with st.form(f"contact_{dev['id']}"):
-                    st.write("**Vous êtes intéressé ? Laissez vos coordonnées :**")
-                    nom = st.text_input("Votre nom")
-                    email = st.text_input("Email")
-                    wa = st.text_input("WhatsApp")
-                    msg2 = st.text_area("Message")
-                    if st.form_submit_button("📩 Envoyer"):
-                        add_contact({
-                            "nom": nom,
-                            "email": email,
-                            "whatsapp": wa,
-                            "message": msg2,
-                            "device_id": dev["id"],
-                        })
-                        st.success("✅ Message envoyé ! Nous vous recontactons vite.")
-
-st.divider()
-st.caption(
-    f"© {NOM_BOUTIQUE} — Smartphones & Ordinateurs • "
-    f"WhatsApp : +226 75 31 67 29"
-)
+ui.footer()
